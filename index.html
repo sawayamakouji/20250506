@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>発注・配分ワークフロー (金額合計表示)</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/datatables.net-dt@1.13.6/css/jquery.dataTables.min.css" rel="stylesheet"/>
+  <style>
+    body { padding: 20px; }
+    .step-content { margin-top: 20px; }
+    #order-table_wrapper { margin-top: 10px; }
+    .drag-drop-list, .dropzone { min-height: 200px; border: 1px dashed #aaa; padding: 10px; }
+    .item { padding: 5px; margin: 5px 0; background: #f8f9fa; border: 1px solid #ddd; cursor: grab; }
+    .item.selected { background: #cfe2ff; border-color: #6c757d; }
+    .packet-container { display: flex; gap: 10px; flex-wrap: wrap; }
+    .packet { border: 1px solid #ccc; border-radius: 4px; padding: 5px; width: 220px; }
+    .packet h6 { margin: 0 0 5px; cursor: text; }
+    .packet .sum { margin-top: 5px; font-weight: bold; }
+    #add-packet { margin-top: 10px; }
+
+    /* --- ここから追加/修正 --- */
+    #step2 .row.mt-3 {
+        /* ステップ2の行全体が画面の高さを超えないように調整する場合 */
+        /* 必要に応じて高さを設定。vhはビューポートの高さに対する割合 */
+        /* max-height: calc(100vh - 250px); /* ヘッダーや他の要素の高さを考慮 */
+        /* display: flex; /* 子要素の高さを揃えるため */
+    }
+
+    #step2 .col-3, #step2 .col-9 {
+        /* 商品リストとパケットエリアのベースの高さ。必要に応じて調整 */
+        /* min-height: 400px; /* 例えば最低この高さは確保する */
+    }
+
+    #step2 .col-9 { /* パケット表示エリアの親コンテナ */
+      max-height: 60vh; /* 例: ビューポートの高さの60%。固定値 (例: 500px) も可 */
+      overflow-y: auto; /* 縦方向にコンテンツがはみ出たらスクロールバーを表示 */
+      padding-bottom: 15px; /* スクロールバーとコンテンツの間に余白 */
+    }
+    /* --- ここまで追加/修正 --- */
+
+  </style>
+</head>
+<body>
+  <h1>発注・配分ワークフロー (金額合計表示)</h1>
+  <input type="file" id="file-input" accept=".csv,.xlsx,.xls" class="form-control mb-3"/>
+  <ul class="nav nav-tabs" id="workflowTabs">
+    <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#step1">ステップ1: 発注数量入力</a></li>
+    <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#step2">ステップ2: パケット配分</a></li>
+  </ul>
+  <div class="tab-content step-content">
+    <div class="tab-pane fade show active" id="step1">
+      <div class="mb-2">
+        対象店舗:
+        <select id="store-select" class="form-select d-inline-block" style="width:auto;"></select>
+        <button id="to-step2" class="btn btn-primary ms-3">次へ</button>
+      </div>
+      <table id="order-table" class="display" style="width:100%">
+        <thead>
+          <tr>
+            <th>伝票日付</th><th>チラシ日</th><th>売価開始日</th><th>売価終了日</th>
+            <th>重要度</th><th>部門</th><th>JAN</th><th>メーカー名</th><th>商品名</th>
+            <th>規格</th><th>発注単位</th><th>原価</th><th>本体売価</th><th>総額売価</th>
+            <th>税率</th><th>値入率</th><th>備考</th><th>提案数量</th><th>発注数量</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="tab-pane fade" id="step2">
+      <div class="d-flex justify-content-between align-items-center">
+        <h5>発注数量をドラッグ＆ドロップでパケットへ配分</h5>
+        <button id="add-packet" class="btn btn-success btn-sm">パケット追加</button>
+      </div>
+      <!-- この行の高さが全体の基準になることがある -->
+      <div class="row mt-3">
+        <div class="col-3"> <!-- 商品リストエリア -->
+          <h6>商品リスト</h6>
+          <div id="allocation-list" class="drag-drop-list"></div>
+        </div>
+        <div class="col-9"> <!-- パケット表示エリア (この要素にスクロールを適用) -->
+          <div class="packet-container" id="packets">
+            <!-- パケットはここに動的に追加される -->
+          </div>
+        </div>
+      </div>
+      <button id="save-allocation" class="btn btn-success mt-3">保存</button>
+    </div>
+  </div>
+
+  <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/datatables.net@1.13.6/js/jquery.dataTables.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/plugins/SortableMultiDrag.min.js"></script>
+
+  <script>
+    if (typeof Sortable !== 'undefined' && typeof Sortable.MultiDrag === 'function') {
+        Sortable.mount(new Sortable.MultiDrag());
+    } else {
+        console.warn("Sortable or Sortable.MultiDrag is not available. Multi-drag functionality might be affected.");
+    }
+
+    const detailKeys = ['伝票日付','チラシ日','売価開始日','売価終了日','重要度','部門','JAN','メーカー名','商品名','規格','発注単位','原価','本体売価','総額売価','税率','値入率','備考'];
+    let dataRows = [], storeCols = [], orderTable, allocationItems = [], packets = [];
+
+    orderTable = $('#order-table').DataTable({
+        columns: detailKeys.map(() => ({})).concat([{}, {}])
+    });
+
+    $('#file-input').on('change', function(e) {
+      const file = e.target.files[0];
+      if (!file) {
+          console.log("ファイルが選択されていません。");
+          return;
+      }
+      console.log("選択されたファイル:", file.name);
+
+      const handle = data => {
+        console.groupCollapsed("`handle` function processing");
+        console.log("入力データ (最初の5行):", data ? data.slice(0, 5) : "データなし");
+
+        if (!data || data.length === 0 || typeof data[0] !== 'object' || data[0] === null) {
+          alert("ファイルの読み込みに失敗したか、データ形式が正しくありません (ヘッダー行が見つからないか、データが空です)。コンソールを確認してください。");
+          console.error("パースされたデータが空か、ヘッダー行が正しくありません。data[0]:", data && data.length > 0 ? data[0] : "N/A");
+          dataRows = []; storeCols = [];
+          $('#store-select').empty().append('<option value="">--選択--</option>');
+          orderTable.clear().draw();
+          console.groupEnd();
+          return;
+        }
+
+        dataRows = data;
+        const firstRowKeys = Object.keys(data[0]).map(String);
+        console.log("ファイルから読み込まれたヘッダー (data[0]のキー):", firstRowKeys);
+        console.log("定義されている詳細キー (detailKeys):", detailKeys);
+
+        storeCols = [];
+        firstRowKeys.forEach(key => {
+            const trimmedKey = key.trim();
+            const isDetailKey = detailKeys.some(dk => dk.trim().toLowerCase() === trimmedKey.toLowerCase());
+            console.log(`キーチェック: "${key}" (trimmed: "${trimmedKey}") -> detailKeysに含まれるか: ${isDetailKey}`);
+            if (!isDetailKey) {
+                storeCols.push(trimmedKey);
+            }
+        });
+
+        console.log("抽出された店舗列 (storeCols):", storeCols);
+
+        const $storeSelect = $('#store-select');
+        $storeSelect.empty().append('<option value="">--選択--</option>');
+
+        if (storeCols.length > 0) {
+            storeCols.forEach(s => {
+                console.log(`店舗選択肢追加: value="${s}", text="${s}"`);
+                $storeSelect.append(`<option value="${s}">${s}</option>`);
+            });
+        } else {
+            console.warn("店舗列が見つかりませんでした。ファイルヘッダーとdetailKeysを確認してください。");
+        }
+        orderTable.clear().draw();
+        console.groupEnd();
+      };
+
+      if (file.name.endsWith('.csv')) {
+        console.log("CSVファイルのパースを開始します...");
+        Papa.parse(file, {
+          header: true,
+          skipEmptyLines: true,
+          complete: res => {
+            console.groupCollapsed("Papa.parse complete");
+            console.log("Papa.parse 結果:", res);
+            if (res.meta && res.meta.fields) {
+                console.log("Papa.parseによって検出されたヘッダー:", res.meta.fields);
+            }
+            if (res.errors && res.errors.length > 0) {
+              console.error("CSVパースエラー:", res.errors);
+              alert("CSVファイルのパース中にエラーが発生しました。詳細はコンソールを確認してください。");
+            }
+            console.groupEnd();
+            handle(res.data);
+          },
+          error: err => {
+            console.error("CSV致命的エラー:", err);
+            alert("CSVファイルの読み込みに失敗しました: " + err.message);
+            handle([]);
+          }
+        });
+      } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+        console.log("Excelファイルのパースを開始します...");
+        const reader = new FileReader();
+        reader.onload = ev => {
+          console.log("FileReader onloadイベント発生。");
+          try {
+            const wb = XLSX.read(ev.target.result, {type:'binary'});
+            const wsname = wb.SheetNames[0];
+            console.log("Excelシート名:", wsname);
+            const ws = wb.Sheets[wsname];
+            const arr = XLSX.utils.sheet_to_json(ws, {defval:'', raw: false });
+            console.groupCollapsed("XLSX.utils.sheet_to_json complete");
+            console.log("XLSXパース結果 (arr):", arr);
+            if (arr.length > 0 && arr[0]) {
+                console.log("XLSXから読み込まれた最初のオブジェクトのキー:", Object.keys(arr[0]));
+            }
+            console.groupEnd();
+            handle(arr);
+          } catch (excelError) {
+            console.error("Excel処理エラー:", excelError);
+            alert("Excelファイルの処理中にエラーが発生しました: " + excelError.message);
+            handle([]);
+          }
+        };
+        reader.onerror = (errorEvent) => {
+            console.error("FileReaderエラー:", errorEvent);
+            alert("ファイルの読み取り中にエラーが発生しました。");
+            handle([]);
+        };
+        reader.readAsBinaryString(file);
+      } else {
+        alert("サポートされていないファイル形式です。");
+        $('#file-input').val('');
+      }
+    });
+
+    $('#store-select').on('change', function(){
+      const store = this.value;
+      orderTable.clear();
+      if(!store || !dataRows || dataRows.length === 0){
+        orderTable.draw();
+        console.log(`店舗選択変更: value="${store}" -> テーブルクリア (データなしまたは店舗未選択)`);
+        return;
+      }
+      console.log(`店舗選択変更: value="${store}" -> テーブルデータ更新開始`);
+
+      dataRows.forEach((r, index) => {
+        if (typeof r !== 'object' || r === null) {
+            console.warn(`行 ${index} は不正なデータのためスキップ:`, r);
+            return;
+        }
+
+        const unitPrice = parseFloat(r['本体売価'] || 0);
+        const orderUnit = parseFloat(r['発注単位'] || 1);
+        const proposalQty = parseFloat(r[store] || 0);
+        let initialOrderQty = proposalQty;
+
+        if (initialOrderQty < 0) initialOrderQty = 0;
+
+        if (orderUnit > 0 && initialOrderQty > 0) {
+            if (initialOrderQty % orderUnit !== 0) {
+                initialOrderQty = Math.ceil(initialOrderQty / orderUnit) * orderUnit;
+            }
+        }
+
+        const orderQtyInput = `<input type="number" class="form-control qty-input" min="0" step="${orderUnit > 0 ? orderUnit : 1}" value="${initialOrderQty}" data-price="${unitPrice}" data-order-unit="${orderUnit}"/>`;
+        
+        const rowData = detailKeys.map(k => (r[k] !== undefined && r[k] !== null) ? String(r[k]) : '');
+        rowData.push(proposalQty);
+        rowData.push(orderQtyInput);
+        try {
+            orderTable.row.add(rowData);
+        } catch (e) {
+            console.error(`DataTableへの行追加エラー (行 ${index}, データ: ${JSON.stringify(r)}):`, e);
+        }
+      });
+      try {
+        orderTable.draw();
+        console.log(`店舗 "${store}" のデータでテーブルを再描画しました。`);
+      } catch (e) {
+        console.error("DataTable描画エラー:", e);
+      }
+    });
+
+    $(document).on('input change blur', '#order-table tbody .qty-input', function(event) {
+        const $input = $(this);
+        const orderUnit = parseFloat($input.data('order-unit')) || 1;
+        let currentQty = parseFloat($input.val());
+
+        if (isNaN(currentQty)) {
+            if (event.type === 'blur' && $input.val().trim() === '') {
+                $input.val(0);
+            }
+            return;
+        }
+
+        if (currentQty < 0) {
+            currentQty = 0;
+            $input.val(0);
+        }
+
+        if (event.type === 'blur' || event.type === 'change') {
+            if (orderUnit > 0 && currentQty > 0) {
+                const adjustedQty = Math.ceil(currentQty / orderUnit) * orderUnit;
+                if (parseFloat($input.val()) !== adjustedQty) {
+                    $input.val(adjustedQty);
+                }
+            } else if (currentQty === 0) {
+                 $input.val(0);
+            }
+        }
+    });
+
+    $('#to-step2').on('click', function(){
+      allocationItems = [];
+      $('#order-table tbody tr').each(function(){
+        const $cells = $(this).find('td');
+        if ($cells.length === 0) return;
+
+        const name = $cells.eq(detailKeys.indexOf('商品名')).text();
+        const $input = $cells.last().find('input.qty-input');
+        if ($input.length === 0) return;
+
+        const qty = parseFloat($input.val())||0;
+        const price = parseFloat($input.data('price'))||0;
+
+        if(qty > 0 && name && name.trim() !== '' && !isNaN(price)) {
+            allocationItems.push({name,qty,price});
+        }
+      });
+      const listElement = document.getElementById('allocation-list');
+      $(listElement).empty();
+      allocationItems.forEach(item => {
+        $(listElement).append(`<div class="item" data-qty="${item.qty}" data-price="${item.price}">${item.name} (${item.qty})</div>`);
+      });
+
+      if (Sortable.get(listElement)) {
+        Sortable.get(listElement).destroy();
+      }
+      Sortable.create(listElement,{
+          group:'shared',
+          multiDrag:true,
+          selectedClass:'selected',
+          animation:150,
+      });
+
+      if ($('#packets .packet').length === 0 && packets.length === 0) {
+          packets=['パケットA','パケットB','パケットC'];
+      }
+      renderPackets();
+      new bootstrap.Tab($('#workflowTabs a[href="#step2"]')[0]).show();
+    });
+
+    function renderPackets(){
+      const container = $('#packets');
+      const existingPacketCount = container.find('.packet').length;
+
+      for (let i = existingPacketCount; i < packets.length; i++) {
+        const name = packets[i];
+        const packetIndex = i;
+
+        const packetDiv = $(`
+          <div class="packet" data-packet-id="${packetIndex}">
+            <h6 contenteditable data-idx="${packetIndex}">${name}</h6>
+            <div class="dropzone" data-idx="${packetIndex}"></div>
+            <div class="sum">合計: 0 円</div>
+          </div>`);
+        container.append(packetDiv);
+
+        packetDiv.find('h6').on('blur', e => {
+            const newName = e.target.textContent.trim();
+            const idx = parseInt(e.target.dataset.idx, 10);
+            if (newName && packets[idx] !== undefined) {
+                packets[idx] = newName;
+            } else if (packets[idx] !== undefined) {
+                e.target.textContent = packets[idx];
+            }
+        }).on('keydown', e => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                e.target.blur();
+            }
+        });
+
+        const dropzoneElement = packetDiv.find('.dropzone')[0];
+        Sortable.create(dropzoneElement, {
+          group: 'shared',
+          multiDrag: true,
+          selectedClass: 'selected',
+          animation: 150,
+          onAdd: updateSums,
+          onRemove: updateSums,
+          sort: true
+        });
+      }
+      updateSums();
+    }
+
+    function updateSums() {
+      $('.packet').each(function() {
+        let total = 0;
+        $(this).find('.dropzone .item').each(function() {
+          const qty = parseFloat($(this).data('qty'))||0;
+          const price = parseFloat($(this).data('price'))||0;
+          total += qty * price;
+        });
+        $(this).find('.sum').text('合計: ' + total.toLocaleString() + ' 円');
+      });
+    }
+
+    $('#add-packet').on('click', function() {
+      const newPacketName = `新規パケット ${packets.length + 1}`; // シンプルな連番に
+      packets.push(newPacketName);
+      renderPackets();
+    });
+
+    $('#save-allocation').on('click', function(){
+      const alloc = {};
+      $('#packets .packet').each(function(){
+        const packetName = $(this).find('h6').text();
+        alloc[packetName] = [];
+        $(this).find('.dropzone .item').each(function(){
+            const itemText = $(this).text();
+            const qty = $(this).data('qty');
+            const price = $(this).data('price');
+            const itemNameMatch = itemText.match(/(.*) \((\d+(\.\d+)?)\)$/);
+            const itemName = itemNameMatch ? itemNameMatch[1].trim() : itemText.trim();
+             alloc[packetName].push({
+                fullText: itemText,
+                name: itemName,
+                quantity: qty,
+                unitPrice: price
+            });
+        });
+      });
+      console.log('Allocation:', alloc);
+      alert('配分結果をコンソールに出力しました。');
+    });
+  </script>
+</body>
+</html>
