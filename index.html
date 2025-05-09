@@ -25,7 +25,7 @@
 </head>
 <body>
   <h1>発注・配分ワークフロー (金額合計表示)</h1>
-  <input type="file" id="file-input" accept=".csv,.xlsx,.xls" class="form-control mb-3"/>
+  <input type="file" id="file-input" accept=".csv,.xlsx,.xls" class="form-control mb-3" multiple/>
   <ul class="nav nav-tabs" id="workflowTabs">
     <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#step1">ステップ1: 発注数量入力</a></li>
     <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#step2">ステップ2: パケット配分</a></li>
@@ -83,6 +83,7 @@
   <script>
     if (typeof Sortable !== 'undefined' && typeof Sortable.MultiDrag === 'function') {
         Sortable.mount(new Sortable.MultiDrag());
+        console.log("Sortable.MultiDrag mounted successfully.");
     } else {
         console.warn("Sortable or Sortable.MultiDrag is not available. Multi-drag functionality might be affected.");
     }
@@ -112,33 +113,162 @@
     });
 
     $('#file-input').on('change', function(e) {
-      const file = e.target.files[0];
-      if (!file) { return; }
-      const handle = data => {
-        if (!data || data.length === 0 || typeof data[0] !== 'object' || data[0] === null) {
-          alert("ファイル読込失敗またはデータ形式不正。");
-          dataRows = []; storeCols = []; $('#store-select').empty().append('<option value="">--選択--</option>'); orderTable.clear().draw();
+      const files = e.target.files;
+      if (!files || files.length === 0) {
+          console.log("ファイルが選択されていません。");
           return;
+      }
+
+      const filePromises = Array.from(files).map(file => {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = ev => {
+            try {
+              let parsedFileContent = [];
+              if (file.name.endsWith('.csv')) {
+                Papa.parse(ev.target.result, {
+                  header: true, skipEmptyLines: true, dynamicTyping: true,
+                  complete: res => {
+                    if (res.data && res.data.length > 0 && typeof res.data[0] === 'object' && res.data[0] !== null) {
+                      parsedFileContent = res.data;
+                    } else { console.warn("CSVパース結果不正:", file.name, res); }
+                    resolve(parsedFileContent);
+                  },
+                  error: err => { console.error("CSVパースエラー:", file.name, err); resolve([]); }
+                });
+              } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+                const wb = XLSX.read(ev.target.result, { type: 'binary' });
+                const targetSheetName = "新データ入力";
+                let ws;
+
+                if (wb.SheetNames.includes(targetSheetName)) {
+                    ws = wb.Sheets[targetSheetName];
+                } else {
+                    console.warn(`ファイル '${file.name}' に '${targetSheetName}' シートが見つかりません。このファイルはスキップされます。`);
+                    resolve([]);
+                    return;
+                }
+                
+                const rowsAsArrays = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
+
+                let headerRowIndex = -1;
+                let actualHeaders = [];
+                // ヘッダー行の候補となるインデックス (0-based)
+                // 6行目(index 5), 7行目(index 6), 8行目(index 7) を候補とする
+                const headerCandidateIndices = [5, 6, 7]; 
+
+                for (const idx of headerCandidateIndices) {
+                    if (idx < rowsAsArrays.length) {
+                        const rowCells = (rowsAsArrays[idx] || []).map(cell => String(cell || '').trim());
+                        if (rowCells.includes(detailKeys[0])) { 
+                            headerRowIndex = idx;
+                            actualHeaders = rowCells;
+                            console.log(`ファイル '${file.name}', シート '${targetSheetName}': ヘッダー行を ${idx + 1}行目で発見。`);
+                            break; 
+                        }
+                    }
+                }
+
+                if (headerRowIndex === -1) {
+                  console.error(`ファイル '${file.name}', シート '${targetSheetName}': 6,7,8行目にヘッダー ('${detailKeys[0]}' を含む行) が見つかりません。このファイルはスキップされます。`);
+                  resolve([]);
+                  return;
+                }
+                
+                const dataRowsOnly = rowsAsArrays.slice(headerRowIndex + 1);
+                parsedFileContent = dataRowsOnly.map(rowArray => {
+                  const obj = {};
+                  if (Array.isArray(rowArray)) {
+                    actualHeaders.forEach((header, index) => {
+                      if (header && header.trim() !== "") { 
+                        obj[header] = (rowArray[index] !== undefined && rowArray[index] !== null) ? String(rowArray[index]) : '';
+                      }
+                    });
+                  }
+                  return obj;
+                }).filter(obj => Object.keys(obj).length > 0 && !Object.values(obj).every(val => val === ''));
+                
+                resolve(parsedFileContent);
+
+              } else {
+                console.warn("未対応ファイル形式:", file.name);
+                resolve([]);
+              }
+            } catch (error) {
+              console.error(`ファイル処理エラー (${file.name}):`, error);
+              reject(error);
+            }
+          };
+          reader.onerror = (errorEvent) => {
+            console.error("FileReaderエラー:", file.name, errorEvent);
+            reject(errorEvent);
+          };
+
+          if (file.name.endsWith('.csv')) {
+            reader.readAsText(file);
+          } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+            reader.readAsBinaryString(file);
+          } else {
+             alert("サポートされていないファイル形式です: " + file.name);
+             resolve([]);
+          }
+        });
+      });
+
+      Promise.all(filePromises).then(results => {
+        const allParsedData = results.reduce((acc, currentFileData) => acc.concat(currentFileData), []);
+        if (allParsedData.length === 0 && files.length > 0) {
+          alert("ファイルの読み込みに失敗したか、有効なデータが含まれていませんでした。");
         }
-        dataRows = data;
-        const firstRowKeys = Object.keys(data[0]).map(String);
-        storeCols = firstRowKeys.filter(key => !detailKeys.some(dk => dk.trim().toLowerCase() === key.trim().toLowerCase()));
-        const $storeSelect = $('#store-select').empty().append('<option value="">--選択--</option>');
-        if (storeCols.length > 0) storeCols.forEach(s => $storeSelect.append(`<option value="${s}">${s}</option>`));
-        orderTable.clear().draw();
-      };
-      if (file.name.endsWith('.csv')) {
-        Papa.parse(file, { header: true, skipEmptyLines: true, complete: res => handle(res.data), error: err => { alert("CSV読込失敗: " + err.message); handle([]); }});
-      } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
-        const reader = new FileReader();
-        reader.onload = ev => {
-          try { const wb = XLSX.read(ev.target.result, {type:'binary'}); handle(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:'', raw: false })); }
-          catch (excelError) { alert("Excel処理エラー: " + excelError.message); handle([]); }
-        };
-        reader.onerror = () => { alert("ファイル読取エラー"); handle([]); };
-        reader.readAsBinaryString(file);
-      } else { alert("未対応ファイル形式。"); $('#file-input').val(''); }
+        handle(allParsedData);
+      }).catch(error => {
+        console.error("複数ファイルの処理中にエラーが発生しました:", error);
+        alert("ファイル処理中にエラーが発生しました。コンソールを確認してください。");
+        handle([]);
+      });
     });
+
+    const handle = data => {
+        console.groupCollapsed("`handle` function processing");
+        console.log("入力データ (最初の5行):", data ? data.slice(0, 5) : "データなし");
+
+        if (!data || data.length === 0) {
+          alert("ファイルの読み込みに失敗したか、データが空です。");
+          dataRows = []; storeCols = [];
+          $('#store-select').empty().append('<option value="">--選択--</option>');
+          orderTable.clear().draw();
+          console.groupEnd(); return;
+        }
+        if (typeof data[0] !== 'object' || data[0] === null) {
+            alert("データ形式が正しくありません。");
+            console.error("パースデータ最初の要素が不正:", data[0]);
+            dataRows = []; storeCols = [];
+            $('#store-select').empty().append('<option value="">--選択--</option>');
+            orderTable.clear().draw();
+            console.groupEnd(); return;
+        }
+
+        dataRows = data;
+        const allFileKeys = new Set();
+        dataRows.forEach(row => {
+            if (typeof row === 'object' && row !== null) {
+                Object.keys(row).forEach(key => allFileKeys.add(String(key).trim()));
+            }
+        });
+        
+        storeCols = [];
+        allFileKeys.forEach(key => {
+            const isDetailKey = detailKeys.some(dk => dk.trim().toLowerCase() === key.toLowerCase());
+            if (!isDetailKey && key !== "") { storeCols.push(key); }
+        });
+
+        const $storeSelect = $('#store-select').empty().append('<option value="">--選択--</option>');
+        if (storeCols.length > 0) {
+            storeCols.forEach(s => $storeSelect.append(`<option value="${s}">${s}</option>`));
+        } else { console.warn("店舗列が見つかりませんでした。"); }
+        orderTable.clear().draw();
+        console.groupEnd();
+      };
 
     $('#store-select').on('change', function(){
       const store = this.value;
@@ -146,9 +276,10 @@
       if(!store || !dataRows || dataRows.length === 0){ orderTable.draw(); return; }
       dataRows.forEach((r) => {
         if (typeof r !== 'object' || r === null) return;
+        const proposalQtyRaw = r[store];
+        const proposalQty = (typeof proposalQtyRaw === 'number' || (typeof proposalQtyRaw === 'string' && !isNaN(parseFloat(proposalQtyRaw)))) ? parseFloat(proposalQtyRaw) : 0;
         const unitPrice = parseFloat(r['本体売価'] || 0);
         const orderUnit = parseFloat(r['発注単位'] || 1);
-        const proposalQty = parseFloat(r[store] || 0);
         let initialOrderQty = proposalQty < 0 ? 0 : proposalQty;
         if (orderUnit > 0 && initialOrderQty > 0 && initialOrderQty % orderUnit !== 0) {
             initialOrderQty = Math.ceil(initialOrderQty / orderUnit) * orderUnit;
@@ -181,17 +312,10 @@
     $('#to-step2').on('click', function(){
       allocationItems = [];
       $('#order-table tbody tr').each(function(){
-        const $row = $(this);
-        const $cells = $row.find('td');
-        if ($cells.length === 0) return;
-
+        const $row = $(this); const $cells = $row.find('td'); if ($cells.length === 0) return;
         const itemName = $cells.eq(detailKeys.indexOf('商品名')).text().trim();
-        const $input = $cells.last().find('input.qty-input');
-        if ($input.length === 0) return;
-
-        const qty = parseFloat($input.val()) || 0;
-        const price = parseFloat($input.data('price')) || 0;
-
+        const $input = $cells.last().find('input.qty-input'); if ($input.length === 0) return;
+        const qty = parseFloat($input.val()) || 0; const price = parseFloat($input.data('price')) || 0;
         if(qty > 0 && itemName && !isNaN(price)) {
             const slipDate = $cells.eq(detailKeys.indexOf('伝票日付')).text().trim();
             const department = $cells.eq(detailKeys.indexOf('部門')).text().trim();
@@ -199,189 +323,97 @@
             const maker = $cells.eq(detailKeys.indexOf('メーカー名')).text().trim();
             const standard = $cells.eq(detailKeys.indexOf('規格')).text().trim();
             const grossProfitRate = $cells.eq(detailKeys.indexOf('値入率')).text().trim();
-
-            allocationItems.push({
-                name: itemName,
-                qty: qty,
-                price: price,
-                slipDate: slipDate,
-                department: department,
-                jan: jan,
-                maker: maker,
-                standard: standard,
-                grossProfitRate: grossProfitRate
-            });
+            allocationItems.push({ name: itemName, qty: qty, price: price, slipDate: slipDate, department: department, jan: jan, maker: maker, standard: standard, grossProfitRate: grossProfitRate });
         }
       });
-
-      const listElement = document.getElementById('allocation-list');
-      $(listElement).empty();
+      const listElement = document.getElementById('allocation-list'); $(listElement).empty();
       allocationItems.forEach(item => {
-        $(listElement).append(
-            `<div class="item"
-                data-qty="${item.qty}"
-                data-price="${item.price}"
-                data-slip-date="${item.slipDate || ''}"
-                data-department="${item.department || ''}"
-                data-jan="${item.jan || ''}"
-                data-maker="${item.maker || ''}"
-                data-standard="${item.standard || ''}"
-                data-gross-profit-rate="${item.grossProfitRate || ''}"
-             >${item.name} (${item.qty})</div>`
-        );
+        $(listElement).append( `<div class="item" data-qty="${item.qty}" data-price="${item.price}" data-slip-date="${item.slipDate || ''}" data-department="${item.department || ''}" data-jan="${item.jan || ''}" data-maker="${item.maker || ''}" data-standard="${item.standard || ''}" data-gross-profit-rate="${item.grossProfitRate || ''}" >${item.name} (${item.qty})</div>`);
       });
-
       if (Sortable.get(listElement)) Sortable.get(listElement).destroy();
       Sortable.create(listElement,{ group:'shared', multiDrag:true, selectedClass:'selected', animation:150 });
-
-      renderPackets(true);
-      new bootstrap.Tab($('#workflowTabs a[href="#step2"]')[0]).show();
+      renderPackets(true); new bootstrap.Tab($('#workflowTabs a[href="#step2"]')[0]).show();
     });
 
     function renderPackets(forceFullRender = false) {
-      const container = $('#packets');
-      if (forceFullRender) { container.empty(); }
+      const container = $('#packets'); if (forceFullRender) { container.empty(); }
       const existingPacketCount = forceFullRender ? 0 : container.find('.packet').length;
-
       for (let i = existingPacketCount; i < packets.length; i++) {
-        const name = packets[i];
-        const packetIndex = i;
-        const packetDiv = $(`
-          <div class="packet" data-packet-id="${packetIndex}">
-            <h6 contenteditable data-idx="${packetIndex}">${name}</h6>
-            <div class="dropzone" data-idx="${packetIndex}"></div>
-            <div class="sum">合計: 0 円</div>
-          </div>`);
+        const name = packets[i]; const packetIndex = i;
+        const packetDiv = $(`<div class="packet" data-packet-id="${packetIndex}"><h6 contenteditable data-idx="${packetIndex}">${name}</h6><div class="dropzone" data-idx="${packetIndex}"></div><div class="sum">合計: 0 円</div></div>`);
         container.append(packetDiv);
         packetDiv.find('h6').on('blur', e => {
-            const newName = e.target.textContent.trim();
-            const idx = parseInt(e.target.dataset.idx, 10);
+            const newName = e.target.textContent.trim(); const idx = parseInt(e.target.dataset.idx, 10);
             if (newName && packets[idx] !== undefined) { packets[idx] = newName; }
             else if (packets[idx] !== undefined) { e.target.textContent = packets[idx]; }
         }).on('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); }});
-        Sortable.create(packetDiv.find('.dropzone')[0], {
-          group: 'shared', multiDrag: true, selectedClass: 'selected', animation: 150,
-          onAdd: updateSums, onRemove: updateSums, sort: true
-        });
+        Sortable.create(packetDiv.find('.dropzone')[0], { group: 'shared', multiDrag: true, selectedClass: 'selected', animation: 150, onAdd: updateSums, onRemove: updateSums, sort: true });
       }
       updateSums();
     }
 
     function updateSums() {
       $('.packet').each(function() {
-        let total = 0;
-        $(this).find('.dropzone .item').each(function() {
-          total += (parseFloat($(this).data('qty'))||0) * (parseFloat($(this).data('price'))||0);
-        });
+        let total = 0; $(this).find('.dropzone .item').each(function() { total += (parseFloat($(this).data('qty'))||0) * (parseFloat($(this).data('price'))||0); });
         $(this).find('.sum').text('合計: ' + total.toLocaleString() + ' 円');
       });
     }
 
-    $('#add-packet').on('click', function() {
-      const newPacketName = `新規パケット ${packets.length + 1}`;
-      packets.push(newPacketName);
-      renderPackets();
-    });
+    $('#add-packet').on('click', function() { const newPacketName = `新規パケット ${packets.length + 1}`; packets.push(newPacketName); renderPackets(); });
 
     $('#save-packet-config').on('click', function(){
-      const currentPacketNames = [];
-      $('#packets .packet h6').each(function() { currentPacketNames.push($(this).text().trim()); });
-      packets = [...currentPacketNames];
-      const packetConfig = { packetNames: packets };
-      const jsonString = JSON.stringify(packetConfig, null, 2);
+      const currentPacketNames = []; $('#packets .packet h6').each(function() { currentPacketNames.push($(this).text().trim()); });
+      packets = [...currentPacketNames]; const packetConfig = { packetNames: packets }; const jsonString = JSON.stringify(packetConfig, null, 2);
       localStorage.setItem(localStorageKey, jsonString);
-      const blob = new Blob([jsonString], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url; link.download = 'packet_config.json';
+      const blob = new Blob([jsonString], { type: 'application/json' }); const url = URL.createObjectURL(blob);
+      const link = document.createElement('a'); link.href = url; link.download = 'packet_config.json';
       document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
       alert('パケット構成を保存しました。');
     });
 
     $('#load-packet-config').on('click', function() { $('#load-packet-config-input').click(); });
     $('#load-packet-config-input').on('change', function(e) {
-        const file = e.target.files[0]; if (!file) return;
-        const reader = new FileReader();
+        const file = e.target.files[0]; if (!file) return; const reader = new FileReader();
         reader.onload = function(event) {
             try {
                 const config = JSON.parse(event.target.result);
                 if (config && Array.isArray(config.packetNames)) {
-                    packets = [...config.packetNames];
-                    localStorage.setItem(localStorageKey, JSON.stringify({ packetNames: packets }));
-                    $('#packets').empty(); renderPackets(true);
-                    alert('パケット構成を読み込みました。');
+                    packets = [...config.packetNames]; localStorage.setItem(localStorageKey, JSON.stringify({ packetNames: packets }));
+                    $('#packets').empty(); renderPackets(true); alert('パケット構成を読み込みました。');
                 } else { alert('JSONファイルの形式が正しくありません。'); }
             } catch (err) { alert('パケット構成ファイルの読み込み失敗: ' + err.message); }
         };
         reader.readAsText(file); $(this).val('');
     });
 
-    // --- CSVダウンロード機能 (修正箇所: 列の並び順変更) ---
     $('#download-csv').on('click', function() {
-        let csvContent = "\uFEFF"; // BOM for UTF-8
-        // 指定された新しいヘッダーの並び順
-        const header = [
-            "パケット名", "伝票日付", "部門", "JAN", "メーカー名",
-            "商品名", "規格", "値入率", "数量", "単価(本体売価)", "合計金額(本体売価)"
-        ];
+        let csvContent = "\uFEFF";
+        const header = ["パケット名", "伝票日付", "部門", "JAN", "メーカー名", "商品名", "規格", "値入率", "数量", "単価(本体売価)", "合計金額(本体売価)"];
         csvContent += header.join(",") + "\r\n";
-
         $('#packets .packet').each(function() {
-            const packetNameEl = $(this).find('h6');
-            const packetName = packetNameEl.length ? packetNameEl.text().trim().replace(/"/g, '""') : "名称未設定パケット";
-
+            const packetNameEl = $(this).find('h6'); const packetName = packetNameEl.length ? packetNameEl.text().trim().replace(/"/g, '""') : "名称未設定パケット";
             if ($(this).find('.dropzone .item').length === 0) {
-                // アイテムがないパケットも行として出力（パケット名のみ、他は空）
-                const emptyCols = Array(header.length - 1).fill('').join(','); // パケット名以外の列を空に
-                csvContent += `"${packetName}",${emptyCols}\r\n`;
+                const emptyCols = Array(header.length - 1).fill('').join(','); csvContent += `"${packetName}",${emptyCols}\r\n`;
             } else {
                 $(this).find('.dropzone .item').each(function() {
-                    const $item = $(this);
-                    const itemText = $item.text(); // 表示されているテキスト (例: "商品A (10)")
-                    const qty = parseFloat($item.data('qty')) || 0;
-                    const price = parseFloat($item.data('price')) || 0;
-                    const itemTotal = qty * price;
-
-                    // 商品名から数量部分を除去 (例: "商品A (10)" -> "商品A")
+                    const $item = $(this); const itemText = $item.text();
+                    const qty = parseFloat($item.data('qty')) || 0; const price = parseFloat($item.data('price')) || 0; const itemTotal = qty * price;
                     const itemNameMatch = itemText.match(/(.*) \(\d+(\.\d+)?\)$/);
                     const itemName = itemNameMatch ? itemNameMatch[1].trim().replace(/"/g, '""') : itemText.trim().replace(/"/g, '""');
-
-                    // data属性から追加情報を取得
                     const slipDate = ($item.data('slip-date') || '').toString().replace(/"/g, '""');
                     const department = ($item.data('department') || '').toString().replace(/"/g, '""');
                     const jan = ($item.data('jan') || '').toString().replace(/"/g, '""');
                     const maker = ($item.data('maker') || '').toString().replace(/"/g, '""');
                     const standard = ($item.data('standard') || '').toString().replace(/"/g, '""');
                     const grossProfitRate = ($item.data('gross-profit-rate') || '').toString().replace(/"/g, '""');
-
-                    // 指定された並び順でrow配列を作成
-                    const row = [
-                        `"${packetName}"`,
-                        `"${slipDate}"`,
-                        `"${department}"`,
-                        `"${jan}"`,
-                        `"${maker}"`,
-                        `"${itemName}"`, // 商品名は抽出したものを使用
-                        `"${standard}"`,
-                        `"${grossProfitRate}"`,
-                        qty,
-                        price,
-                        itemTotal
-                    ];
+                    const row = [`"${packetName}"`, `"${slipDate}"`, `"${department}"`, `"${jan}"`, `"${maker}"`, `"${itemName}"`, `"${standard}"`, `"${grossProfitRate}"`, qty, price, itemTotal];
                     csvContent += row.join(",") + "\r\n";
                 });
             }
         });
-
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.setAttribute("href", url);
-        link.setAttribute("download", "パケット配分結果_詳細_v2.csv"); // ファイル名微調整
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }); const url = URL.createObjectURL(blob);
+        const link = document.createElement("a"); link.setAttribute("href", url); link.setAttribute("download", "パケット配分結果_詳細_v2.csv");
+        document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
     });
   </script>
 </body>
