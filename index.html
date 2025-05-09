@@ -16,28 +16,11 @@
     .packet { border: 1px solid #ccc; border-radius: 4px; padding: 5px; width: 220px; }
     .packet h6 { margin: 0 0 5px; cursor: text; }
     .packet .sum { margin-top: 5px; font-weight: bold; }
-    #add-packet { margin-top: 10px; }
-
-    /* --- ここから追加/修正 --- */
-    #step2 .row.mt-3 {
-        /* ステップ2の行全体が画面の高さを超えないように調整する場合 */
-        /* 必要に応じて高さを設定。vhはビューポートの高さに対する割合 */
-        /* max-height: calc(100vh - 250px); /* ヘッダーや他の要素の高さを考慮 */
-        /* display: flex; /* 子要素の高さを揃えるため */
+    #step2 .col-9 {
+      max-height: 60vh;
+      overflow-y: auto;
+      padding-bottom: 15px;
     }
-
-    #step2 .col-3, #step2 .col-9 {
-        /* 商品リストとパケットエリアのベースの高さ。必要に応じて調整 */
-        /* min-height: 400px; /* 例えば最低この高さは確保する */
-    }
-
-    #step2 .col-9 { /* パケット表示エリアの親コンテナ */
-      max-height: 60vh; /* 例: ビューポートの高さの60%。固定値 (例: 500px) も可 */
-      overflow-y: auto; /* 縦方向にコンテンツがはみ出たらスクロールバーを表示 */
-      padding-bottom: 15px; /* スクロールバーとコンテンツの間に余白 */
-    }
-    /* --- ここまで追加/修正 --- */
-
   </style>
 </head>
 <body>
@@ -69,21 +52,23 @@
     <div class="tab-pane fade" id="step2">
       <div class="d-flex justify-content-between align-items-center">
         <h5>発注数量をドラッグ＆ドロップでパケットへ配分</h5>
-        <button id="add-packet" class="btn btn-success btn-sm">パケット追加</button>
+        <div class="mt-3 d-flex align-items-center gap-2">
+          <button id="add-packet" class="btn btn-success btn-sm">パケット追加</button>
+          <button id="load-packet-config" class="btn btn-info btn-sm">構成読込</button>
+          <input type="file" id="load-packet-config-input" accept=".json" style="display: none;">
+          <button id="save-packet-config" class="btn btn-primary btn-sm">構成保存</button>
+          <button id="download-csv" class="btn btn-secondary btn-sm">CSVダウンロード</button>
+        </div>
       </div>
-      <!-- この行の高さが全体の基準になることがある -->
       <div class="row mt-3">
-        <div class="col-3"> <!-- 商品リストエリア -->
+        <div class="col-3">
           <h6>商品リスト</h6>
           <div id="allocation-list" class="drag-drop-list"></div>
         </div>
-        <div class="col-9"> <!-- パケット表示エリア (この要素にスクロールを適用) -->
-          <div class="packet-container" id="packets">
-            <!-- パケットはここに動的に追加される -->
-          </div>
+        <div class="col-9">
+          <div class="packet-container" id="packets"></div>
         </div>
       </div>
-      <button id="save-allocation" class="btn btn-success mt-3">保存</button>
     </div>
   </div>
 
@@ -104,6 +89,23 @@
 
     const detailKeys = ['伝票日付','チラシ日','売価開始日','売価終了日','重要度','部門','JAN','メーカー名','商品名','規格','発注単位','原価','本体売価','総額売価','税率','値入率','備考'];
     let dataRows = [], storeCols = [], orderTable, allocationItems = [], packets = [];
+    const localStorageKey = 'workflowPacketConfig';
+
+    function initializePacketsFromStorage() {
+        const savedPacketConfigJson = localStorage.getItem(localStorageKey);
+        if (savedPacketConfigJson) {
+            try {
+                const savedConfig = JSON.parse(savedPacketConfigJson);
+                if (savedConfig && Array.isArray(savedConfig.packetNames)) {
+                    packets = [...savedConfig.packetNames];
+                } else { packets = ['パケットA','パケットB','パケットC']; }
+            } catch (e) {
+                packets = ['パケットA','パケットB','パケットC'];
+                localStorage.removeItem(localStorageKey);
+            }
+        } else { packets = ['パケットA','パケットB','パケットC']; }
+    }
+    initializePacketsFromStorage();
 
     orderTable = $('#order-table').DataTable({
         columns: detailKeys.map(() => ({})).concat([{}, {}])
@@ -111,243 +113,139 @@
 
     $('#file-input').on('change', function(e) {
       const file = e.target.files[0];
-      if (!file) {
-          console.log("ファイルが選択されていません。");
-          return;
-      }
-      console.log("選択されたファイル:", file.name);
-
+      if (!file) { return; }
       const handle = data => {
-        console.groupCollapsed("`handle` function processing");
-        console.log("入力データ (最初の5行):", data ? data.slice(0, 5) : "データなし");
-
         if (!data || data.length === 0 || typeof data[0] !== 'object' || data[0] === null) {
-          alert("ファイルの読み込みに失敗したか、データ形式が正しくありません (ヘッダー行が見つからないか、データが空です)。コンソールを確認してください。");
-          console.error("パースされたデータが空か、ヘッダー行が正しくありません。data[0]:", data && data.length > 0 ? data[0] : "N/A");
-          dataRows = []; storeCols = [];
-          $('#store-select').empty().append('<option value="">--選択--</option>');
-          orderTable.clear().draw();
-          console.groupEnd();
+          alert("ファイル読込失敗またはデータ形式不正。");
+          dataRows = []; storeCols = []; $('#store-select').empty().append('<option value="">--選択--</option>'); orderTable.clear().draw();
           return;
         }
-
         dataRows = data;
         const firstRowKeys = Object.keys(data[0]).map(String);
-        console.log("ファイルから読み込まれたヘッダー (data[0]のキー):", firstRowKeys);
-        console.log("定義されている詳細キー (detailKeys):", detailKeys);
-
-        storeCols = [];
-        firstRowKeys.forEach(key => {
-            const trimmedKey = key.trim();
-            const isDetailKey = detailKeys.some(dk => dk.trim().toLowerCase() === trimmedKey.toLowerCase());
-            console.log(`キーチェック: "${key}" (trimmed: "${trimmedKey}") -> detailKeysに含まれるか: ${isDetailKey}`);
-            if (!isDetailKey) {
-                storeCols.push(trimmedKey);
-            }
-        });
-
-        console.log("抽出された店舗列 (storeCols):", storeCols);
-
-        const $storeSelect = $('#store-select');
-        $storeSelect.empty().append('<option value="">--選択--</option>');
-
-        if (storeCols.length > 0) {
-            storeCols.forEach(s => {
-                console.log(`店舗選択肢追加: value="${s}", text="${s}"`);
-                $storeSelect.append(`<option value="${s}">${s}</option>`);
-            });
-        } else {
-            console.warn("店舗列が見つかりませんでした。ファイルヘッダーとdetailKeysを確認してください。");
-        }
+        storeCols = firstRowKeys.filter(key => !detailKeys.some(dk => dk.trim().toLowerCase() === key.trim().toLowerCase()));
+        const $storeSelect = $('#store-select').empty().append('<option value="">--選択--</option>');
+        if (storeCols.length > 0) storeCols.forEach(s => $storeSelect.append(`<option value="${s}">${s}</option>`));
         orderTable.clear().draw();
-        console.groupEnd();
       };
-
       if (file.name.endsWith('.csv')) {
-        console.log("CSVファイルのパースを開始します...");
-        Papa.parse(file, {
-          header: true,
-          skipEmptyLines: true,
-          complete: res => {
-            console.groupCollapsed("Papa.parse complete");
-            console.log("Papa.parse 結果:", res);
-            if (res.meta && res.meta.fields) {
-                console.log("Papa.parseによって検出されたヘッダー:", res.meta.fields);
-            }
-            if (res.errors && res.errors.length > 0) {
-              console.error("CSVパースエラー:", res.errors);
-              alert("CSVファイルのパース中にエラーが発生しました。詳細はコンソールを確認してください。");
-            }
-            console.groupEnd();
-            handle(res.data);
-          },
-          error: err => {
-            console.error("CSV致命的エラー:", err);
-            alert("CSVファイルの読み込みに失敗しました: " + err.message);
-            handle([]);
-          }
-        });
+        Papa.parse(file, { header: true, skipEmptyLines: true, complete: res => handle(res.data), error: err => { alert("CSV読込失敗: " + err.message); handle([]); }});
       } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
-        console.log("Excelファイルのパースを開始します...");
         const reader = new FileReader();
         reader.onload = ev => {
-          console.log("FileReader onloadイベント発生。");
-          try {
-            const wb = XLSX.read(ev.target.result, {type:'binary'});
-            const wsname = wb.SheetNames[0];
-            console.log("Excelシート名:", wsname);
-            const ws = wb.Sheets[wsname];
-            const arr = XLSX.utils.sheet_to_json(ws, {defval:'', raw: false });
-            console.groupCollapsed("XLSX.utils.sheet_to_json complete");
-            console.log("XLSXパース結果 (arr):", arr);
-            if (arr.length > 0 && arr[0]) {
-                console.log("XLSXから読み込まれた最初のオブジェクトのキー:", Object.keys(arr[0]));
-            }
-            console.groupEnd();
-            handle(arr);
-          } catch (excelError) {
-            console.error("Excel処理エラー:", excelError);
-            alert("Excelファイルの処理中にエラーが発生しました: " + excelError.message);
-            handle([]);
-          }
+          try { const wb = XLSX.read(ev.target.result, {type:'binary'}); handle(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:'', raw: false })); }
+          catch (excelError) { alert("Excel処理エラー: " + excelError.message); handle([]); }
         };
-        reader.onerror = (errorEvent) => {
-            console.error("FileReaderエラー:", errorEvent);
-            alert("ファイルの読み取り中にエラーが発生しました。");
-            handle([]);
-        };
+        reader.onerror = () => { alert("ファイル読取エラー"); handle([]); };
         reader.readAsBinaryString(file);
-      } else {
-        alert("サポートされていないファイル形式です。");
-        $('#file-input').val('');
-      }
+      } else { alert("未対応ファイル形式。"); $('#file-input').val(''); }
     });
 
     $('#store-select').on('change', function(){
       const store = this.value;
       orderTable.clear();
-      if(!store || !dataRows || dataRows.length === 0){
-        orderTable.draw();
-        console.log(`店舗選択変更: value="${store}" -> テーブルクリア (データなしまたは店舗未選択)`);
-        return;
-      }
-      console.log(`店舗選択変更: value="${store}" -> テーブルデータ更新開始`);
-
-      dataRows.forEach((r, index) => {
-        if (typeof r !== 'object' || r === null) {
-            console.warn(`行 ${index} は不正なデータのためスキップ:`, r);
-            return;
-        }
-
+      if(!store || !dataRows || dataRows.length === 0){ orderTable.draw(); return; }
+      dataRows.forEach((r) => {
+        if (typeof r !== 'object' || r === null) return;
         const unitPrice = parseFloat(r['本体売価'] || 0);
         const orderUnit = parseFloat(r['発注単位'] || 1);
         const proposalQty = parseFloat(r[store] || 0);
-        let initialOrderQty = proposalQty;
-
-        if (initialOrderQty < 0) initialOrderQty = 0;
-
-        if (orderUnit > 0 && initialOrderQty > 0) {
-            if (initialOrderQty % orderUnit !== 0) {
-                initialOrderQty = Math.ceil(initialOrderQty / orderUnit) * orderUnit;
-            }
+        let initialOrderQty = proposalQty < 0 ? 0 : proposalQty;
+        if (orderUnit > 0 && initialOrderQty > 0 && initialOrderQty % orderUnit !== 0) {
+            initialOrderQty = Math.ceil(initialOrderQty / orderUnit) * orderUnit;
         }
-
         const orderQtyInput = `<input type="number" class="form-control qty-input" min="0" step="${orderUnit > 0 ? orderUnit : 1}" value="${initialOrderQty}" data-price="${unitPrice}" data-order-unit="${orderUnit}"/>`;
-        
         const rowData = detailKeys.map(k => (r[k] !== undefined && r[k] !== null) ? String(r[k]) : '');
-        rowData.push(proposalQty);
-        rowData.push(orderQtyInput);
-        try {
-            orderTable.row.add(rowData);
-        } catch (e) {
-            console.error(`DataTableへの行追加エラー (行 ${index}, データ: ${JSON.stringify(r)}):`, e);
-        }
+        rowData.push(proposalQty, orderQtyInput);
+        orderTable.row.add(rowData);
       });
-      try {
-        orderTable.draw();
-        console.log(`店舗 "${store}" のデータでテーブルを再描画しました。`);
-      } catch (e) {
-        console.error("DataTable描画エラー:", e);
-      }
+      orderTable.draw();
     });
 
     $(document).on('input change blur', '#order-table tbody .qty-input', function(event) {
         const $input = $(this);
         const orderUnit = parseFloat($input.data('order-unit')) || 1;
         let currentQty = parseFloat($input.val());
-
         if (isNaN(currentQty)) {
-            if (event.type === 'blur' && $input.val().trim() === '') {
-                $input.val(0);
-            }
+            if (event.type === 'blur' && $input.val().trim() === '') $input.val(0);
             return;
         }
-
-        if (currentQty < 0) {
-            currentQty = 0;
-            $input.val(0);
-        }
-
+        if (currentQty < 0) { currentQty = 0; $input.val(0); }
         if (event.type === 'blur' || event.type === 'change') {
             if (orderUnit > 0 && currentQty > 0) {
                 const adjustedQty = Math.ceil(currentQty / orderUnit) * orderUnit;
-                if (parseFloat($input.val()) !== adjustedQty) {
-                    $input.val(adjustedQty);
-                }
-            } else if (currentQty === 0) {
-                 $input.val(0);
-            }
+                if (parseFloat($input.val()) !== adjustedQty) $input.val(adjustedQty);
+            } else if (currentQty === 0) { $input.val(0); }
         }
     });
 
     $('#to-step2').on('click', function(){
       allocationItems = [];
       $('#order-table tbody tr').each(function(){
-        const $cells = $(this).find('td');
+        const $row = $(this);
+        const $cells = $row.find('td');
         if ($cells.length === 0) return;
 
-        const name = $cells.eq(detailKeys.indexOf('商品名')).text();
+        const itemName = $cells.eq(detailKeys.indexOf('商品名')).text().trim();
         const $input = $cells.last().find('input.qty-input');
         if ($input.length === 0) return;
 
-        const qty = parseFloat($input.val())||0;
-        const price = parseFloat($input.data('price'))||0;
+        const qty = parseFloat($input.val()) || 0;
+        const price = parseFloat($input.data('price')) || 0;
 
-        if(qty > 0 && name && name.trim() !== '' && !isNaN(price)) {
-            allocationItems.push({name,qty,price});
+        if(qty > 0 && itemName && !isNaN(price)) {
+            const slipDate = $cells.eq(detailKeys.indexOf('伝票日付')).text().trim();
+            const department = $cells.eq(detailKeys.indexOf('部門')).text().trim();
+            const jan = $cells.eq(detailKeys.indexOf('JAN')).text().trim();
+            const maker = $cells.eq(detailKeys.indexOf('メーカー名')).text().trim();
+            const standard = $cells.eq(detailKeys.indexOf('規格')).text().trim();
+            const grossProfitRate = $cells.eq(detailKeys.indexOf('値入率')).text().trim();
+
+            allocationItems.push({
+                name: itemName,
+                qty: qty,
+                price: price,
+                slipDate: slipDate,
+                department: department,
+                jan: jan,
+                maker: maker,
+                standard: standard,
+                grossProfitRate: grossProfitRate
+            });
         }
       });
+
       const listElement = document.getElementById('allocation-list');
       $(listElement).empty();
       allocationItems.forEach(item => {
-        $(listElement).append(`<div class="item" data-qty="${item.qty}" data-price="${item.price}">${item.name} (${item.qty})</div>`);
+        $(listElement).append(
+            `<div class="item"
+                data-qty="${item.qty}"
+                data-price="${item.price}"
+                data-slip-date="${item.slipDate || ''}"
+                data-department="${item.department || ''}"
+                data-jan="${item.jan || ''}"
+                data-maker="${item.maker || ''}"
+                data-standard="${item.standard || ''}"
+                data-gross-profit-rate="${item.grossProfitRate || ''}"
+             >${item.name} (${item.qty})</div>`
+        );
       });
 
-      if (Sortable.get(listElement)) {
-        Sortable.get(listElement).destroy();
-      }
-      Sortable.create(listElement,{
-          group:'shared',
-          multiDrag:true,
-          selectedClass:'selected',
-          animation:150,
-      });
+      if (Sortable.get(listElement)) Sortable.get(listElement).destroy();
+      Sortable.create(listElement,{ group:'shared', multiDrag:true, selectedClass:'selected', animation:150 });
 
-      if ($('#packets .packet').length === 0 && packets.length === 0) {
-          packets=['パケットA','パケットB','パケットC'];
-      }
-      renderPackets();
+      renderPackets(true);
       new bootstrap.Tab($('#workflowTabs a[href="#step2"]')[0]).show();
     });
 
-    function renderPackets(){
+    function renderPackets(forceFullRender = false) {
       const container = $('#packets');
-      const existingPacketCount = container.find('.packet').length;
+      if (forceFullRender) { container.empty(); }
+      const existingPacketCount = forceFullRender ? 0 : container.find('.packet').length;
 
       for (let i = existingPacketCount; i < packets.length; i++) {
         const name = packets[i];
         const packetIndex = i;
-
         const packetDiv = $(`
           <div class="packet" data-packet-id="${packetIndex}">
             <h6 contenteditable data-idx="${packetIndex}">${name}</h6>
@@ -355,31 +253,15 @@
             <div class="sum">合計: 0 円</div>
           </div>`);
         container.append(packetDiv);
-
         packetDiv.find('h6').on('blur', e => {
             const newName = e.target.textContent.trim();
             const idx = parseInt(e.target.dataset.idx, 10);
-            if (newName && packets[idx] !== undefined) {
-                packets[idx] = newName;
-            } else if (packets[idx] !== undefined) {
-                e.target.textContent = packets[idx];
-            }
-        }).on('keydown', e => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                e.target.blur();
-            }
-        });
-
-        const dropzoneElement = packetDiv.find('.dropzone')[0];
-        Sortable.create(dropzoneElement, {
-          group: 'shared',
-          multiDrag: true,
-          selectedClass: 'selected',
-          animation: 150,
-          onAdd: updateSums,
-          onRemove: updateSums,
-          sort: true
+            if (newName && packets[idx] !== undefined) { packets[idx] = newName; }
+            else if (packets[idx] !== undefined) { e.target.textContent = packets[idx]; }
+        }).on('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); }});
+        Sortable.create(packetDiv.find('.dropzone')[0], {
+          group: 'shared', multiDrag: true, selectedClass: 'selected', animation: 150,
+          onAdd: updateSums, onRemove: updateSums, sort: true
         });
       }
       updateSums();
@@ -389,41 +271,117 @@
       $('.packet').each(function() {
         let total = 0;
         $(this).find('.dropzone .item').each(function() {
-          const qty = parseFloat($(this).data('qty'))||0;
-          const price = parseFloat($(this).data('price'))||0;
-          total += qty * price;
+          total += (parseFloat($(this).data('qty'))||0) * (parseFloat($(this).data('price'))||0);
         });
         $(this).find('.sum').text('合計: ' + total.toLocaleString() + ' 円');
       });
     }
 
     $('#add-packet').on('click', function() {
-      const newPacketName = `新規パケット ${packets.length + 1}`; // シンプルな連番に
+      const newPacketName = `新規パケット ${packets.length + 1}`;
       packets.push(newPacketName);
       renderPackets();
     });
 
-    $('#save-allocation').on('click', function(){
-      const alloc = {};
-      $('#packets .packet').each(function(){
-        const packetName = $(this).find('h6').text();
-        alloc[packetName] = [];
-        $(this).find('.dropzone .item').each(function(){
-            const itemText = $(this).text();
-            const qty = $(this).data('qty');
-            const price = $(this).data('price');
-            const itemNameMatch = itemText.match(/(.*) \((\d+(\.\d+)?)\)$/);
-            const itemName = itemNameMatch ? itemNameMatch[1].trim() : itemText.trim();
-             alloc[packetName].push({
-                fullText: itemText,
-                name: itemName,
-                quantity: qty,
-                unitPrice: price
-            });
+    $('#save-packet-config').on('click', function(){
+      const currentPacketNames = [];
+      $('#packets .packet h6').each(function() { currentPacketNames.push($(this).text().trim()); });
+      packets = [...currentPacketNames];
+      const packetConfig = { packetNames: packets };
+      const jsonString = JSON.stringify(packetConfig, null, 2);
+      localStorage.setItem(localStorageKey, jsonString);
+      const blob = new Blob([jsonString], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url; link.download = 'packet_config.json';
+      document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
+      alert('パケット構成を保存しました。');
+    });
+
+    $('#load-packet-config').on('click', function() { $('#load-packet-config-input').click(); });
+    $('#load-packet-config-input').on('change', function(e) {
+        const file = e.target.files[0]; if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(event) {
+            try {
+                const config = JSON.parse(event.target.result);
+                if (config && Array.isArray(config.packetNames)) {
+                    packets = [...config.packetNames];
+                    localStorage.setItem(localStorageKey, JSON.stringify({ packetNames: packets }));
+                    $('#packets').empty(); renderPackets(true);
+                    alert('パケット構成を読み込みました。');
+                } else { alert('JSONファイルの形式が正しくありません。'); }
+            } catch (err) { alert('パケット構成ファイルの読み込み失敗: ' + err.message); }
+        };
+        reader.readAsText(file); $(this).val('');
+    });
+
+    // --- CSVダウンロード機能 (修正箇所: 列の並び順変更) ---
+    $('#download-csv').on('click', function() {
+        let csvContent = "\uFEFF"; // BOM for UTF-8
+        // 指定された新しいヘッダーの並び順
+        const header = [
+            "パケット名", "伝票日付", "部門", "JAN", "メーカー名",
+            "商品名", "規格", "値入率", "数量", "単価(本体売価)", "合計金額(本体売価)"
+        ];
+        csvContent += header.join(",") + "\r\n";
+
+        $('#packets .packet').each(function() {
+            const packetNameEl = $(this).find('h6');
+            const packetName = packetNameEl.length ? packetNameEl.text().trim().replace(/"/g, '""') : "名称未設定パケット";
+
+            if ($(this).find('.dropzone .item').length === 0) {
+                // アイテムがないパケットも行として出力（パケット名のみ、他は空）
+                const emptyCols = Array(header.length - 1).fill('').join(','); // パケット名以外の列を空に
+                csvContent += `"${packetName}",${emptyCols}\r\n`;
+            } else {
+                $(this).find('.dropzone .item').each(function() {
+                    const $item = $(this);
+                    const itemText = $item.text(); // 表示されているテキスト (例: "商品A (10)")
+                    const qty = parseFloat($item.data('qty')) || 0;
+                    const price = parseFloat($item.data('price')) || 0;
+                    const itemTotal = qty * price;
+
+                    // 商品名から数量部分を除去 (例: "商品A (10)" -> "商品A")
+                    const itemNameMatch = itemText.match(/(.*) \(\d+(\.\d+)?\)$/);
+                    const itemName = itemNameMatch ? itemNameMatch[1].trim().replace(/"/g, '""') : itemText.trim().replace(/"/g, '""');
+
+                    // data属性から追加情報を取得
+                    const slipDate = ($item.data('slip-date') || '').toString().replace(/"/g, '""');
+                    const department = ($item.data('department') || '').toString().replace(/"/g, '""');
+                    const jan = ($item.data('jan') || '').toString().replace(/"/g, '""');
+                    const maker = ($item.data('maker') || '').toString().replace(/"/g, '""');
+                    const standard = ($item.data('standard') || '').toString().replace(/"/g, '""');
+                    const grossProfitRate = ($item.data('gross-profit-rate') || '').toString().replace(/"/g, '""');
+
+                    // 指定された並び順でrow配列を作成
+                    const row = [
+                        `"${packetName}"`,
+                        `"${slipDate}"`,
+                        `"${department}"`,
+                        `"${jan}"`,
+                        `"${maker}"`,
+                        `"${itemName}"`, // 商品名は抽出したものを使用
+                        `"${standard}"`,
+                        `"${grossProfitRate}"`,
+                        qty,
+                        price,
+                        itemTotal
+                    ];
+                    csvContent += row.join(",") + "\r\n";
+                });
+            }
         });
-      });
-      console.log('Allocation:', alloc);
-      alert('配分結果をコンソールに出力しました。');
+
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", "パケット配分結果_詳細_v2.csv"); // ファイル名微調整
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
     });
   </script>
 </body>
