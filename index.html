@@ -5,7 +5,6 @@
   <title>発注・配分ワークフロー (金額合計表示)</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/datatables.net-dt@1.13.6/css/jquery.dataTables.min.css" rel="stylesheet"/>
-  <!-- ★ DataTables FixedHeader CSS 追加 -->
   <link href="https://cdn.datatables.net/fixedheader/3.4.0/css/fixedHeader.dataTables.min.css" rel="stylesheet"/>
   <style>
     body { padding: 20px; }
@@ -18,23 +17,12 @@
     .packet { border: 1px solid #ccc; border-radius: 4px; padding: 5px; width: 220px; }
     .packet h6 { margin: 0 0 5px; cursor: text; }
     .packet .sum { margin-top: 5px; font-weight: bold; }
-    #step2 .col-9 {
-      max-height: 60vh;
-      overflow-y: auto;
-      padding-bottom: 15px;
-    }
-    #order-table_wrapper .top-pagination {
-        display: inline-block;
-        margin: 0 10px;
-    }
+    #step2 .col-9 { max-height: 60vh; overflow-y: auto; padding-bottom: 15px; }
+    #order-table_wrapper .top-pagination { display: inline-block; margin: 0 10px; }
     #order-table_wrapper .dataTables_length,
     #order-table_wrapper .dataTables_filter,
-    #order-table_wrapper .top-pagination {
-        margin-bottom: 0.5em;
-    }
-    /* FixedHeaderが有効な場合、テーブルのスクロールのために高さを制限する必要がある場合があります */
-    /* もしテーブル全体が画面内に収まっている場合は不要です */
-    /* #step1 .dataTables_scrollBody { max-height: 60vh; overflow-y: auto; } */
+    #order-table_wrapper .top-pagination { margin-bottom: 0.5em; }
+    .table-controls-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
   </style>
 </head>
 <body>
@@ -46,10 +34,15 @@
   </ul>
   <div class="tab-content step-content">
     <div class="tab-pane fade show active" id="step1">
-      <div class="mb-2">
-        対象店舗:
-        <select id="store-select" class="form-select d-inline-block" style="width:auto;"></select>
-        <button id="to-step2" class="btn btn-primary ms-3">次へ</button>
+      <div class="table-controls-top">
+        <div>
+          対象店舗:
+          <select id="store-select" class="form-select d-inline-block" style="width:auto;"></select>
+        </div>
+        <div>
+          <button id="download-order-list-csv" class="btn btn-info btn-sm me-2">全発注リストダウンロード(CSV)</button>
+          <button id="to-step2" class="btn btn-primary">次へ</button>
+        </div>
       </div>
       <table id="order-table" class="display" style="width:100%">
         <thead>
@@ -65,7 +58,6 @@
       </table>
     </div>
     <div class="tab-pane fade" id="step2">
-      <!-- ステップ2のコンテンツは変更なし -->
       <div class="d-flex justify-content-between align-items-center">
         <h5>発注数量をドラッグ＆ドロップでパケットへ配分</h5>
         <div class="mt-3 d-flex align-items-center gap-2">
@@ -77,13 +69,8 @@
         </div>
       </div>
       <div class="row mt-3">
-        <div class="col-3">
-          <h6>商品リスト</h6>
-          <div id="allocation-list" class="drag-drop-list"></div>
-        </div>
-        <div class="col-9">
-          <div class="packet-container" id="packets"></div>
-        </div>
+        <div class="col-3"><h6>商品リスト</h6><div id="allocation-list" class="drag-drop-list"></div></div>
+        <div class="col-9"><div class="packet-container" id="packets"></div></div>
       </div>
     </div>
   </div>
@@ -93,7 +80,6 @@
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/datatables.net@1.13.6/js/jquery.dataTables.min.js"></script>
-  <!-- ★ DataTables FixedHeader JS 追加 (DataTables本体のJSの後) -->
   <script src="https://cdn.datatables.net/fixedheader/3.4.0/js/dataTables.fixedHeader.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/plugins/SortableMultiDrag.min.js"></script>
@@ -101,17 +87,72 @@
   <script>
     if (typeof Sortable !== 'undefined' && typeof Sortable.MultiDrag === 'function') {
         Sortable.mount(new Sortable.MultiDrag());
-        console.log("Sortable.MultiDrag mounted successfully.");
+        // console.log("Sortable.MultiDrag mounted successfully."); // デバッグ用ログ
     } else {
-        console.warn("Sortable or Sortable.MultiDrag is not available. Multi-drag functionality might be affected.");
+        // console.warn("Sortable or Sortable.MultiDrag is not available."); // デバッグ用ログ
     }
-
     const detailKeys = ['取得ファイル名', '伝票日付','チラシ日','売価開始日','売価終了日','重要度','部門','JAN','メーカー名','商品名','規格','発注単位','原価','本体売価','総額売価','税率','値入率','備考'];
     let dataRows = [], storeCols = [], orderTable, allocationItems = [], packets = [];
     const localStorageKey = 'workflowPacketConfig';
+    initializePacketsFromStorage();
+
+    orderTable = $('#order-table').DataTable({
+        columns: detailKeys.map(() => ({})).concat([{}, {}]),
+        dom: 'lfrtip', 
+        fixedHeader: true,
+        // initComplete は orderTable.on('init.dt', ...) に移動
+    });
+    
+    orderTable.on('init.dt', function() { // DataTables初期化完了後に実行
+        var $tableContainer = $(this).closest('.dataTables_wrapper');
+        var $paginate = $tableContainer.find('.dataTables_paginate');
+        var $topControlsRow = $tableContainer.find('.dataTables_length').closest('.row'); 
+        if (!$topControlsRow.length) {
+             $topControlsRow = $tableContainer.find('.dataTables_length').parent();
+        }
+        if ($paginate.length && $topControlsRow.length) {
+            $topControlsRow.find('.top-pagination').remove();
+            var $clonedPaginate = $paginate.clone(true)
+                .addClass('top-pagination col-sm-12 col-md-auto')
+                .css('padding-left', '0').css('padding-right', '0');
+            var $filterDiv = $topControlsRow.find('.dataTables_filter');
+            if ($filterDiv.length) { $clonedPaginate.insertAfter($filterDiv); }
+            else { var $lengthDiv = $topControlsRow.find('.dataTables_length');
+                if($lengthDiv.length) { $clonedPaginate.insertAfter($lengthDiv); }
+                else { $topControlsRow.append($clonedPaginate); }
+            }
+        }
+    });
+
+    $('#download-order-list-csv').on('click', function() {
+        if (!orderTable || !$('#store-select').val()) {
+            alert('まず店舗を選択し、データを表示してください。');
+            return;
+        }
+        let csvContent = "\uFEFF";
+        const csvHeader = [...detailKeys, "提案数量", "発注数量"];
+        csvContent += csvHeader.map(h => `"${h.replace(/"/g, '""')}"`).join(",") + "\r\n";
+        orderTable.rows().nodes().to$().each(function() {
+            const $row = $(this); const rowData = [];
+            $row.find('td').each(function(index, cell) {
+                if (index < csvHeader.length - 1) {
+                    rowData.push(`"${$(cell).text().trim().replace(/"/g, '""')}"`);
+                } else { 
+                    const qtyInputVal = $(cell).find('input.qty-input').val();
+                    rowData.push(qtyInputVal !== undefined ? qtyInputVal : '');
+                }
+            });
+            csvContent += rowData.join(",") + "\r\n";
+        });
+        const selectedStore = $('#store-select option:selected').text() || "全店舗";
+        const fileName = `発注リスト_${selectedStore.replace(/\s/g, '_')}_${new Date().toISOString().slice(0,10)}.csv`;
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob); const link = document.createElement("a");
+        link.setAttribute("href", url); link.setAttribute("download", fileName);
+        document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
+    });
 
     function initializePacketsFromStorage() {
-        // 省略 (変更なし)
         const savedPacketConfigJson = localStorage.getItem(localStorageKey);
         if (savedPacketConfigJson) {
             try {
@@ -125,37 +166,8 @@
             }
         } else { packets = ['パケットA','パケットB','パケットC']; }
     }
-    initializePacketsFromStorage();
-
-    orderTable = $('#order-table').DataTable({
-        columns: detailKeys.map(() => ({})).concat([{}, {}]),
-        dom: 'lfrtip', 
-        // ★ FixedHeader オプションを追加
-        fixedHeader: true,
-        initComplete: function () {
-            var $tableContainer = $(this.api().table().container());
-            var $paginate = $tableContainer.find('.dataTables_paginate');
-            var $topControlsRow = $tableContainer.find('.dataTables_length').closest('.row'); 
-            if (!$topControlsRow.length) {
-                 $topControlsRow = $tableContainer.find('.dataTables_length').parent();
-            }
-            if ($paginate.length && $topControlsRow.length) {
-                $topControlsRow.find('.top-pagination').remove();
-                var $clonedPaginate = $paginate.clone(true)
-                    .addClass('top-pagination col-sm-12 col-md-auto')
-                    .css('padding-left', '0').css('padding-right', '0');
-                var $filterDiv = $topControlsRow.find('.dataTables_filter');
-                if ($filterDiv.length) { $clonedPaginate.insertAfter($filterDiv); }
-                else { var $lengthDiv = $topControlsRow.find('.dataTables_length');
-                    if($lengthDiv.length) { $clonedPaginate.insertAfter($lengthDiv); }
-                    else { $topControlsRow.append($clonedPaginate); }
-                }
-            }
-        }
-    });
 
     $('#file-input').on('change', function(e) {
-      // 省略 (変更なし)
       const files = e.target.files;
       if (!files || files.length === 0) { return; }
       const filePromises = Array.from(files).map(file => {
@@ -165,27 +177,23 @@
             try {
               let parsedFileContent = [];
               const keysToNotEmpty = ['JAN', 'メーカー名', '商品名', '規格', '発注単位', '原価', '本体売価', '総額売価'];
-
               if (file.name.endsWith('.csv')) {
                 Papa.parse(ev.target.result, {
                   header: true, skipEmptyLines: true, dynamicTyping: true,
                   complete: res => {
                     if (res.data && res.data.length > 0 && typeof res.data[0] === 'object' && res.data[0] !== null) {
                       parsedFileContent = res.data.map(row => ({ ...row, '取得ファイル名': file.name }))
-                        .filter(obj => {
-                            const hasValueInCheckKeys = keysToNotEmpty.some(key => obj[key] && String(obj[key]).trim() !== '');
-                            return hasValueInCheckKeys;
-                        });
-                    } else { console.warn("CSV不正:", file.name, res); }
+                        .filter(obj => keysToNotEmpty.some(key => obj[key] && String(obj[key]).trim() !== ''));
+                    } else { /* console.warn("CSV不正:", file.name, res); */ } // デバッグ用ログ
                     resolve(parsedFileContent);
                   },
-                  error: err => { console.error("CSVエラー:", file.name, err); resolve([]); }
+                  error: err => { /* console.error("CSVエラー:", file.name, err); */ resolve([]); } // デバッグ用ログ
                 });
               } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
                 const wb = XLSX.read(ev.target.result, { type: 'binary' });
                 const targetSheetName = "新データ入力"; let ws;
                 if (wb.SheetNames.includes(targetSheetName)) { ws = wb.Sheets[targetSheetName]; }
-                else { console.warn(`'${file.name}'に'${targetSheetName}'なし`); resolve([]); return; }
+                else { /* console.warn(`'${file.name}'に'${targetSheetName}'なし`); */ resolve([]); return; } // デバッグ用ログ
                 const rowsAsArrays = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
                 let headerRowIndex = -1; let actualHeaders = [];
                 const headerCandidateIndices = [5, 6, 7]; 
@@ -194,12 +202,12 @@
                         const rowCells = (rowsAsArrays[idx] || []).map(cell => String(cell || '').trim());
                         if (rowCells.includes(detailKeys[1])) { 
                             headerRowIndex = idx; actualHeaders = rowCells;
-                            console.log(`'${file.name}', '${targetSheetName}': ヘッダー ${idx + 1}行目`);
+                            /* console.log(`'${file.name}', '${targetSheetName}': ヘッダー ${idx + 1}行目`); */ // デバッグ用ログ
                             break; 
                         }
                     }
                 }
-                if (headerRowIndex === -1) { console.error(`'${file.name}', '${targetSheetName}': ヘッダー見つからず`); resolve([]); return; }
+                if (headerRowIndex === -1) { /* console.error(`'${file.name}', '${targetSheetName}': ヘッダー見つからず`); */ resolve([]); return; } // デバッグ用ログ
                 const dataRowsOnly = rowsAsArrays.slice(headerRowIndex + 1);
                 parsedFileContent = dataRowsOnly.map(rowArray => {
                   const obj = { '取得ファイル名': file.name };
@@ -212,14 +220,13 @@
                 }).filter(obj => {
                     const otherKeysExistAndNotEmpty = Object.keys(obj).some(key => key !== '取得ファイル名' && obj[key] && String(obj[key]).trim() !== '');
                     if (!otherKeysExistAndNotEmpty) return false;
-                    const hasValueInCheckKeys = keysToNotEmpty.some(key => obj[key] && String(obj[key]).trim() !== '');
-                    return hasValueInCheckKeys;
+                    return keysToNotEmpty.some(key => obj[key] && String(obj[key]).trim() !== '');
                 });
                 resolve(parsedFileContent);
-              } else { console.warn("未対応:", file.name); resolve([]); }
-            } catch (error) { console.error(`処理エラー (${file.name}):`, error); reject(error); }
+              } else { /* console.warn("未対応:", file.name); */ resolve([]); } // デバッグ用ログ
+            } catch (error) { /* console.error(`処理エラー (${file.name}):`, error); */ reject(error); } // デバッグ用ログ
           };
-          reader.onerror = err => { console.error("Readerエラー:", file.name, err); reject(err); };
+          reader.onerror = err => { /* console.error("Readerエラー:", file.name, err); */ reject(err); }; // デバッグ用ログ
           if (file.name.endsWith('.csv')) { reader.readAsText(file); }
           else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) { reader.readAsBinaryString(file); }
           else { alert("未対応形式: " + file.name); resolve([]); }
@@ -229,31 +236,33 @@
         const allParsedData = results.reduce((acc, data) => acc.concat(data), []);
         if (allParsedData.length === 0 && files.length > 0) { alert("読込失敗または有効データなし"); }
         handle(allParsedData);
-      }).catch(err => { console.error("複数ファイル処理エラー:", err); alert("ファイル処理エラー"); handle([]); });
+      }).catch(err => { /* console.error("複数ファイル処理エラー:", err); */ alert("ファイル処理エラー"); handle([]); }); // デバッグ用ログ
     });
 
     const handle = data => {
-      // 省略 (変更なし)
-        console.groupCollapsed("`handle`");
+        // console.groupCollapsed("`handle`"); // ★ デバッグ用ログ削除
         if (!data || data.length === 0 || typeof data[0] !== 'object' || data[0] === null) {
           alert("読込失敗またはデータ形式不正");
           dataRows = []; storeCols = []; $('#store-select').empty().append('<option value="">--選択--</option>'); orderTable.clear().draw();
-          console.groupEnd(); return;
+          // console.groupEnd(); // ★ デバッグ用ログ削除
+          return;
         }
         dataRows = data; const allFileKeys = new Set();
         dataRows.forEach(row => { if (typeof row === 'object' && row !== null) Object.keys(row).forEach(key => allFileKeys.add(String(key).trim())); });
         storeCols = [];
         allFileKeys.forEach(key => { if (!detailKeys.some(dk => dk.trim().toLowerCase() === key.toLowerCase()) && key !== "") storeCols.push(key); });
         const $storeSelect = $('#store-select').empty().append('<option value="">--選択--</option>');
-        if (storeCols.length > 0) storeCols.forEach(s => $storeSelect.append(`<option value="${s}">${s}</option>`));
-        else console.warn("店舗列なし");
+        if (storeCols.length > 0) {
+             storeCols.forEach(s => $storeSelect.append(`<option value="${s}">${s}</option>`));
+        } else {
+            // console.warn("店舗列なし"); // デバッグ用ログ
+        }
         orderTable.clear().draw(); 
-        console.log("handle function finished, dataRows count:", dataRows.length);
-        console.groupEnd();
-    };
+        // console.log("handle function finished, dataRows count:", dataRows.length); // ★ デバッグ用ログ削除
+        // console.groupEnd(); // ★ デバッグ用ログ削除
+      };
 
     $('#store-select').on('change', function(){
-      // 省略 (変更なし)
       const store = this.value; 
       orderTable.clear();
       if(!store || !dataRows || dataRows.length === 0){ orderTable.draw(); return; }
@@ -273,7 +282,6 @@
     });
 
     $(document).on('input change blur', '#order-table tbody .qty-input', function(event) {
-      // 省略 (変更なし)
         const $input = $(this); const orderUnit = parseFloat($input.data('order-unit')) || 1; let currentQty = parseFloat($input.val());
         if (isNaN(currentQty)) { if (event.type === 'blur' && $input.val().trim() === '') $input.val(0); return; }
         if (currentQty < 0) { currentQty = 0; $input.val(0); }
@@ -284,7 +292,6 @@
     });
 
     $('#to-step2').on('click', function(){
-      // 省略 (変更なし)
       allocationItems = [];
       orderTable.rows().nodes().to$().each(function() {
         const $row = $(this); const $cells = $row.find('td'); if ($cells.length === 0) return;
@@ -309,19 +316,6 @@
       renderPackets(true); new bootstrap.Tab($('#workflowTabs a[href="#step2"]')[0]).show();
     });
 
-    function renderPackets(forceFullRender = false) { /* 省略 (変更なし) */ }
-    function updateSums() { /* 省略 (変更なし) */ }
-    $('#add-packet').on('click', function() { /* 省略 (変更なし) */ });
-    $('#save-packet-config').on('click', function(){ /* 省略 (変更なし) */ });
-    $('#load-packet-config').on('click', function() { /* 省略 (変更なし) */ });
-    $('#load-packet-config-input').on('change', function(e) { /* 省略 (変更なし) */ });
-    $('#download-csv').on('click', function() { /* 省略 (変更なし) */ });
-    
-    // renderPackets, updateSums, #add-packet, #save-packet-config, #load-packet-config, #download-csv
-    // の関数定義は前のコードと同じなので省略します。
-    // （コメントアウトした部分を前のコードからコピーしてください）
-
-    // --- 以下、省略した関数群 ---
     function renderPackets(forceFullRender = false) {
       const container = $('#packets'); if (forceFullRender) { container.empty(); }
       const existingPacketCount = forceFullRender ? 0 : container.find('.packet').length;
@@ -373,7 +367,7 @@
         reader.readAsText(file); $(this).val('');
     });
 
-    $('#download-csv').on('click', function() {
+    $('#download-csv').on('click', function() { // ステップ2のCSVダウンロード
         let csvContent = "\uFEFF";
         const header = ["取得ファイル名", "パケット名", "伝票日付", "部門", "JAN", "メーカー名", "商品名", "規格", "値入率", "数量", "単価(本体売価)", "合計金額(本体売価)"];
         csvContent += header.join(",") + "\r\n";
